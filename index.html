@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="no">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Melissa sin verden</title>
+  <meta name="description" content="Hjemmet til Asarayja, Shadowette og flere furry-karakterer.">
+  <meta name="theme-color" content="#160a18" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#fff6fa" media="(prefers-color-scheme: light)">
+  <script>try{var t=localStorage.getItem('theme');if(t==='light'||t==='dark')document.documentElement.dataset.theme=t}catch(e){}</script>
+  <link rel="icon" href="bilder/asarayja-hode.webp">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Cherry+Bomb+One&family=Dancing+Script:wght@700&family=Nunito:wght@400;600;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+  <a class="skip" href="#main">Hopp til innhold</a>
+
+  <header class="topbar">
+    <a class="brand" href="#/">
+      <img src="bilder/asarayja-hode.webp" alt="" width="36" height="36">
+      <span id="brandText">Melissa sin verden</span>
+    </a>
+    <button class="menu-btn" id="menuBtn" aria-label="Meny" aria-expanded="false">
+      <span></span><span></span><span></span>
+    </button>
+    <nav class="nav" id="nav">
+      <a href="#/" data-route="home" data-t="nav_home">Hjem</a>
+      <a href="#/galleri" data-route="gallery" data-t="nav_gallery">Galleri</a>
+      <a href="#/om-meg" data-route="about" data-t="nav_about">Om meg</a>
+      <button class="lang theme-btn" id="themeBtn" aria-label="Bytt tema">☀</button>
+      <button class="lang" id="langBtn" aria-label="Bytt språk">EN</button>
+    </nav>
+  </header>
+
+  <main id="main" tabindex="-1">
+    <div class="loading">♥</div>
+  </main>
+
+  <footer class="footer">
+    <div class="stripes" aria-hidden="true"></div>
+    <p><span id="footerText">Melissa sin verden</span> · <span id="madeWith">Laget med</span> <span class="trans-heart" aria-label="hjerte i transflaggets farger">♥</span> · <span id="year"></span></p>
+  </footer>
+
+  <div class="lightbox" id="lightbox" hidden>
+    <button class="lb-close" id="lbClose" aria-label="Lukk">×</button>
+    <button class="lb-nav lb-prev" id="lbPrev" aria-label="Forrige">‹</button>
+    <figure>
+      <img id="lbImg" alt="">
+      <figcaption id="lbCap"></figcaption>
+    </figure>
+    <button class="lb-nav lb-next" id="lbNext" aria-label="Neste">›</button>
+  </div>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <script src="assets/app.js"></script>
+</body>
+</html>

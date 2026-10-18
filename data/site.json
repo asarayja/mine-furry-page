@@ -1,0 +1,80 @@
+{
+  "site": {
+    "title": { "no": "Melissa sin verden", "en": "Melissa's world" },
+    "tagline": { "no": "Hjemmet til Asarayja, Shadowette og en drage som snart klekkes.", "en": "Home of Asarayja, Shadowette and a dragon that will hatch soon." },
+    "heroImage": "bilder/melissa-og-asarayja.webp",
+    "intro": { "no": "Velkommen inn! Her finner du karakterene mine, bilder av dem og litt om meg.", "en": "Welcome in! Here you'll find my characters, pictures of them and a little about me." }
+  },
+  "about": {
+    "image": "bilder/melissa-og-asarayja-2.webp",
+    "text": { "no": "Hei! Jeg er Melissa, og dette er min lille krok av furry-verdenen.", "en": "Hi! I'm Melissa, and this is my little corner of the furry world." },
+    "facts": [
+      { "label": { "no": "Navn", "en": "Name" }, "value": { "no": "Melissa Helena", "en": "Melissa Helena" } },
+      { "label": { "no": "Bursdag", "en": "Birthday" }, "value": { "no": "15. januar", "en": "January 15" } },
+      { "label": { "no": "Alder", "en": "Age" }, "value": { "no": "36 år", "en": "36 years" } },
+      { "label": { "no": "Interesser", "en": "Interests" }, "value": { "no": "PC-spill, serier og å lære nye ting", "en": "PC games, TV series and learning new things" } },
+      { "label": { "no": "Liker", "en": "Likes" }, "value": { "no": "Gå turer, være med venner og trene", "en": "Going for walks, hanging out with friends and working out" } },
+      { "label": { "no": "Sport", "en": "Sport" }, "value": { "no": "Svømming og friidrett", "en": "Swimming and athletics" } },
+      { "label": { "no": "Favorittspill", "en": "Favourite games" }, "value": { "no": "Retrospill", "en": "Retro games" } }
+    ]
+  },
+  "characters": [
+    {
+      "id": "asarayja",
+      "name": "Asarayja",
+      "emoji": "🐰",
+      "status": "ready",
+      "species": { "no": "Kanin", "en": "Bunny" },
+      "tagline": { "no": "Goth-kanin med hjerter på ørene", "en": "Goth bunny with hearts on her ears" },
+      "bio": { "no": "Mer om Asarayja kommer snart.", "en": "More about Asarayja coming soon." },
+      "image": "bilder/asarayja-ref.webp",
+      "avatar": "bilder/asarayja-hode.webp",
+      "accent": "#e8436e",
+      "accent2": "#7a44c9",
+      "palette": ["#b3121f", "#141016", "#f4eef2", "#6f3fb3", "#e9b7d6"],
+      "facts": [
+        { "label": { "no": "Art", "en": "Species" }, "value": { "no": "Kanin", "en": "Bunny" } },
+        { "label": { "no": "Opprinnelse", "en": "Origin" }, "value": { "no": "Nordisk/amerikansk kanin", "en": "Nordic/American bunny" } }
+      ],
+      "gallery": [
+        { "src": "bilder/melissa-og-asarayja.webp", "caption": { "no": "Melissa og Asarayja", "en": "Melissa and Asarayja" } },
+        { "src": "bilder/melissa-og-asarayja-2.webp", "caption": { "no": "Bestevenner", "en": "Best friends" } },
+        { "src": "bilder/asarayja-ref.webp", "caption": { "no": "Referanse", "en": "Reference" } }
+      ]
+    },
+    {
+      "id": "shadowette",
+      "name": "Shadowette",
+      "emoji": "🐼",
+      "status": "ready",
+      "species": { "no": "Panda", "en": "Panda" },
+      "tagline": { "no": "Svart, hvit og litt mystisk", "en": "Black, white and a little mysterious" },
+      "bio": { "no": "Bilder og mer info om Shadowette kommer snart.", "en": "Pictures and more info about Shadowette coming soon." },
+      "image": "",
+      "avatar": "",
+      "accent": "#e8e4ef",
+      "accent2": "#5fbf9a",
+      "palette": [],
+      "facts": [
+        { "label": { "no": "Art", "en": "Species" }, "value": { "no": "Panda", "en": "Panda" } }
+      ],
+      "gallery": []
+    },
+    {
+      "id": "drage",
+      "name": "???",
+      "emoji": "🐉",
+      "status": "wip",
+      "species": { "no": "Drage", "en": "Dragon" },
+      "tagline": { "no": "Klekkes snart …", "en": "Hatching soon …" },
+      "bio": { "no": "Den siste karakteren er fortsatt under arbeid.", "en": "The last character is still a work in progress." },
+      "image": "",
+      "avatar": "",
+      "accent": "#e0a63a",
+      "accent2": "#7a44c9",
+      "palette": [],
+      "facts": [],
+      "gallery": []
+    }
+  ]
+}
