@@ -237,10 +237,32 @@
   let lbItems = [];
   let lbMain = null;
 
+  // Språket står i adressen, så en engelsk lenke kan deles: #/en/k/asarayja
+  function readHash() {
+    const raw = location.hash.replace(/^#/, '');
+    const parts = raw.split('/').filter(Boolean);
+    const en = parts[0] === 'en';
+    if (en) parts.shift();
+    return { lang: en ? 'en' : 'no', parts, hash: en ? '/' + parts.join('/') : raw };
+  }
+  const hashFor = (l, parts) => (l === 'en' ? '#/en' : '#') + '/' + parts.join('/');
+
+  // Legger til /en i alle lenker inne på siden når siden er på engelsk.
+  function localizeLinks() {
+    document.querySelectorAll('a[href^="#/"]').forEach((a) => {
+      if (!a.dataset.base) a.dataset.base = a.getAttribute('href');
+      a.setAttribute('href', hashFor(lang, a.dataset.base.slice(2).split('/').filter(Boolean)));
+    });
+  }
+
   function render() {
     if (!data) return;
-    const hash = location.hash.replace(/^#/, '');
-    const parts = hash.split('/').filter(Boolean);
+    const { lang: urlLang, parts, hash } = readHash();
+    if (urlLang !== lang) {
+      lang = urlLang;
+      try { localStorage.setItem('lang', lang); } catch (e) {}
+      applyStaticText();
+    }
     let route = 'home';
     let html;
     lbItems = []; lbMain = null;
@@ -255,6 +277,7 @@
     else { route = ''; html = viewNotFound(); }
 
     main.innerHTML = html;
+    localizeLinks();
     markPlaying();
     document.querySelectorAll('.nav a, .footer-nav a').forEach((a) => a.classList.toggle('active', a.dataset.route === route));
 
@@ -313,10 +336,8 @@
   });
 
   $('#langBtn').addEventListener('click', () => {
-    lang = lang === 'no' ? 'en' : 'no';
-    try { localStorage.setItem('lang', lang); } catch (e) {}
-    applyStaticText();
-    render();
+    // Bytter adressen, så render() bytter språket. Da kan den engelske adressen kopieres og deles.
+    location.hash = hashFor(lang === 'no' ? 'en' : 'no', readHash().parts);
   });
 
   // ---------- Lyst / mørkt tema ----------
@@ -575,6 +596,10 @@
     .then((r) => { if (!r.ok) throw new Error(r.status); return r.json(); })
     .then((json) => {
       data = json;
+      // Har man valgt engelsk før, og lenken ikke sier noe om språk, åpnes den engelske utgaven.
+      if (lang === 'en' && readHash().lang === 'no' && !/^#?characters$/.test(location.hash)) {
+        history.replaceState(null, '', hashFor('en', readHash().parts));
+      }
       applyStaticText();
       render();
       window.addEventListener('hashchange', render);
