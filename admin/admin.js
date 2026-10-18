@@ -8,6 +8,11 @@
   const SETTINGS_KEY = 'mv-admin-github';
   const DATA_PATH = 'data/site.json';
   const UPLOAD_DIR = 'bilder/uploads';
+  const AUDIO_ROOT = 'musikk'; // hvert album har sin egen mappe: musikk/<album-id>/
+  const ALBUM_ID = /^[a-z0-9]+(-[a-z0-9]+)*$/;
+  const LOCAL_AUDIO = /^musikk\/[a-z0-9-]+\/[^/]+$/;
+  const MAX_AUDIO_MB = 40;
+  const DEFAULT_SHARE_IMAGE = 'bilder/deling.jpg';
   const MAX_IMAGE = 2000;
 
   const app = document.getElementById('app');
@@ -20,6 +25,8 @@
   let dirty = false;
   let busy = 0;
   const previews = {}; // bildesti -> lokal blob-URL, så nye bilder vises før Pages er oppdatert
+  let published = null; // innholdet slik det sist ble lagret, for å se hvilke lydfiler som er flyttet eller fjernet
+  const sessionAudio = new Set(); // lydfiler lastet opp siden forrige publisering
 
   // ---------- Innstillinger ----------
 
@@ -56,8 +63,9 @@
     if (res.status === 404 && opts.allow404) return null;
     if (!res.ok) {
       let msg = `GitHub svarte ${res.status}`;
-      try { const j = await res.json(); if (j.message) msg += `: ${j.message}`; } catch (e) {}
-      const err = new Error(msg); err.status = res.status; throw err;
+      let githubMessage = '';
+      try { const j = await res.json(); if (j.message) { githubMessage = j.message; msg += `: ${j.message}`; } } catch (e) {}
+      const err = new Error(msg); err.status = res.status; err.githubMessage = githubMessage; throw err;
     }
     return res.json();
   }
@@ -104,6 +112,8 @@
   function normalize(d) {
     d.site = d.site || {};
     ['title', 'tagline', 'intro'].forEach((k) => (d.site[k] = i18n(d.site[k])));
+    d.site.heroImage = d.site.heroImage || '';
+    d.site.shareImage = d.site.shareImage || '';
     d.about = d.about || {};
     d.about.text = i18n(d.about.text);
     d.about.facts = (d.about.facts || []).map(normFact);
@@ -112,6 +122,12 @@
       species: i18n(c.species), tagline: i18n(c.tagline), bio: i18n(c.bio),
       palette: c.palette || [], facts: (c.facts || []).map(normFact),
       gallery: (c.gallery || []).map((g) => ({ src: g.src || '', caption: i18n(g.caption) })),
+    }));
+    d.music = d.music || {};
+    d.music.albums = (d.music.albums || []).map((a) => ({
+      id: '', artist: '', year: '', cover: '', ...a,
+      title: i18n(a.title), description: i18n(a.description),
+      tracks: (a.tracks || []).map((tk) => ({ title: tk.title || '', src: tk.src || '' })),
     }));
     return d;
   }
@@ -125,8 +141,8 @@
     obj[last] = value;
   }
 
-  const slug = (s) => String(s).toLowerCase().normalize('NFKD').replace(/[̀-ͯ]/g, '')
-    .replace(/æ/g, 'ae').replace(/ø/g, 'o').replace(/å/g, 'a').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'karakter';
+  const slug = (s, fallback = 'karakter') => String(s).toLowerCase().normalize('NFKD').replace(/[̀-ͯ]/g, '')
+    .replace(/æ/g, 'ae').replace(/ø/g, 'o').replace(/å/g, 'a').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || fallback;
 
   function markDirty() { dirty = true; updateStatus(); }
 
@@ -160,12 +176,65 @@
     }
   }
 
+  // ---------- Lyd ----------
+
+  const AUDIO_EXT = /\.(mp3|m4a|aac|ogg|oga|wav|flac)$/i;
+  const isAudio = (f) => f.type.startsWith('audio/') || AUDIO_EXT.test(f.name);
+  const niceTitle = (name) => name.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ').replace(/\s+/g, ' ').trim();
+
+  async function uploadAudio(file, folder) {
+    if (!ALBUM_ID.test(folder)) throw new Error('Gi albumet et gyldig nettadresse-navn (id) før du laster opp: små bokstaver, tall og bindestrek.');
+    if (!isAudio(file)) throw new Error(`${file.name} er ikke en lydfil som støttes (MP3, M4A, OGG, WAV eller FLAC)`);
+    if (file.size > MAX_AUDIO_MB * 1024 * 1024) throw new Error(`${file.name} er for stor (maks ${MAX_AUDIO_MB} MB). Prøv å lagre den som MP3.`);
+    busy++; updateStatus(`Laster opp ${file.name} …`);
+    try {
+      let ext = (file.name.match(AUDIO_EXT) || [, 'mp3'])[1].toLowerCase();
+      if (ext === 'oga') ext = 'ogg';
+      const base = slug(niceTitle(file.name), 'spor').slice(0, 60).replace(/-+$/, '');
+      const path = await backend.upload(file, base, ext, 'audio', folder);
+      previews[path] = URL.createObjectURL(file);
+      sessionAudio.add(path);
+      return path;
+    } finally {
+      busy--; updateStatus();
+    }
+  }
+
+  // Finner lydfiler som må flyttes (albumet har fått ny id) eller slettes (sporet er fjernet).
+  // Endrer src i `next` til de nye stiene.
+  function planMusicFiles(old, next) {
+    const srcs = (d) => (d?.music?.albums || []).flatMap((a) => a.tracks.map((t) => t.src)).filter((p) => LOCAL_AUDIO.test(p));
+    const owners = {};
+    for (const a of next.music.albums) for (const t of a.tracks) (owners[t.src] ||= new Set()).add(a.id);
+    const taken = new Set(srcs(next));
+    const moved = {};
+    const moves = [];
+    for (const a of next.music.albums) {
+      for (const t of a.tracks) {
+        if (!LOCAL_AUDIO.test(t.src)) continue;
+        const [, folder, file] = t.src.split('/');
+        if (owners[t.src]?.has(folder)) continue; // ligger allerede i riktig mappe
+        if (!moved[t.src]) {
+          let to = `${AUDIO_ROOT}/${a.id}/${file}`;
+          for (let n = 2; taken.has(to); n++) to = `${AUDIO_ROOT}/${a.id}/${file.replace(/(\.[^.]+)?$/, `-${n}$1`)}`;
+          taken.add(to);
+          moved[t.src] = to;
+          moves.push({ from: t.src, to });
+        }
+        t.src = moved[t.src];
+      }
+    }
+    const keep = new Set(srcs(next));
+    const deletes = [...new Set([...srcs(old), ...sessionAudio])].filter((p) => LOCAL_AUDIO.test(p) && !keep.has(p) && !moved[p]);
+    return { moves, deletes };
+  }
+
   const imgSrc = (p) => !p ? '' : previews[p] || (/^(https?:)?\/\//.test(p) ? p : `../${p}`);
 
-  function pickFiles(multiple) {
+  function pickFiles(multiple, accept = 'image/*') {
     return new Promise((resolve) => {
       const input = document.createElement('input');
-      input.type = 'file'; input.accept = 'image/*'; input.multiple = multiple;
+      input.type = 'file'; input.accept = accept; input.multiple = multiple;
       input.onchange = () => resolve([...input.files]);
       input.click();
     });
@@ -232,7 +301,7 @@
     async connect() {
       const repo = await api('');
       if (repo.permissions && !repo.permissions.push) {
-        const e = new Error('Nøkkelen kan ikke skrive til repoet.'); e.status = 403; throw e;
+        const e = new Error('Nøkkelen kan ikke skrive til repoet.'); e.status = 403; e.githubMessage = 'kontoen din har ikke skrivetilgang til dette repoet'; throw e;
       }
       const file = await getFile(DATA_PATH);
       if (file) return ready(JSON.parse(base64ToText(file.content)));
@@ -242,13 +311,66 @@
       ready(await res.json(), true);
     },
 
-    async save(content) {
-      await putFile(DATA_PATH, textToBase64(JSON.stringify(content, null, 2) + '\n'), 'Oppdater innhold fra admin-panelet');
+    // Innhold, delingsinfo, flytting og sletting av lydfiler lagres i én commit, så alt skjer samtidig eller ikke i det hele tatt.
+    save(content, files = { moves: [], deletes: [] }) {
+      const job = queue.then(() => this.commit(content, files));
+      queue = job.catch(() => {});
+      return job;
     },
 
-    async upload(blob, base, ext) {
-      const path = `${UPLOAD_DIR}/${base}-${Date.now().toString(36)}.${ext}`;
-      await putFile(path, bytesToBase64(new Uint8Array(await blob.arrayBuffer())), `Last opp bilde ${path}`);
+    async commit(content, files) {
+      const ref = `/git/refs/heads/${gh.branch.split('/').map(encodeURIComponent).join('/')}`;
+      for (let attempt = 0; ; attempt++) {
+        const head = (await api(ref)).object.sha;
+        const baseTree = (await api(`/git/commits/${head}`)).tree.sha;
+        const tree = await api(`/git/trees/${baseTree}?recursive=1`);
+        const blobs = new Map(tree.tree.filter((e) => e.type === 'blob').map((e) => [e.path, e]));
+        const text = (p, body) => ({ path: repoPath(p), mode: '100644', type: 'blob', content: body });
+        const entries = [text(DATA_PATH, JSON.stringify(content, null, 2) + '\n')];
+
+        // Discord, Messenger osv. leser ikke JavaScript, så delingsinfoen må stå rett i index.html.
+        const index = blobs.get(repoPath('index.html'));
+        if (index) {
+          try {
+            const html = base64ToText((await api(`/git/blobs/${index.sha}`)).content);
+            const next = html.replace(/  <!-- deling:start[\s\S]*?<!-- deling:slutt -->/, shareMetaHTML(content));
+            if (next !== html) entries.push(text('index.html', next));
+          } catch (err) {
+            console.warn('Klarte ikke å oppdatere delingsinfo i index.html', err);
+          }
+        }
+
+        for (const { from, to } of files.moves) {
+          const b = blobs.get(repoPath(from));
+          if (!b) continue;
+          entries.push({ path: repoPath(to), mode: b.mode, type: 'blob', sha: b.sha });
+          entries.push({ path: repoPath(from), mode: b.mode, type: 'blob', sha: null });
+        }
+        for (const p of files.deletes) {
+          const b = blobs.get(repoPath(p));
+          if (b) entries.push({ path: repoPath(p), mode: b.mode, type: 'blob', sha: null });
+        }
+
+        const newTree = await api('/git/trees', { method: 'POST', body: JSON.stringify({ base_tree: baseTree, tree: entries }) });
+        const commit = await api('/git/commits', {
+          method: 'POST',
+          body: JSON.stringify({ message: 'Oppdater innhold fra admin-panelet', tree: newTree.sha, parents: [head] }),
+        });
+        try {
+          await api(ref, { method: 'PATCH', body: JSON.stringify({ sha: commit.sha }) });
+          return;
+        } catch (e) {
+          // Noe annet ble lagret i mellomtiden: prøv på nytt oppå den nye versjonen.
+          if ((e.status === 409 || e.status === 422) && attempt < 2) { await new Promise((r) => setTimeout(r, 800)); continue; }
+          throw e;
+        }
+      }
+    },
+
+    async upload(blob, base, ext, kind = 'image', folder = '') {
+      const dir = kind === 'audio' ? `${AUDIO_ROOT}/${folder}` : UPLOAD_DIR;
+      const path = `${dir}/${base}-${Date.now().toString(36)}.${ext}`;
+      await putFile(path, bytesToBase64(new Uint8Array(await blob.arrayBuffer())), `Last opp ${kind === 'audio' ? 'lydfil' : 'bilde'} ${path}`);
       return path;
     },
 
@@ -269,6 +391,28 @@
     },
   };
 
+  function shareMetaHTML(content) {
+    const siteUrl = new URL('../', location.href).href;
+    const abs = (p) => new URL(p, siteUrl).href;
+    const image = content.site.shareImage || DEFAULT_SHARE_IMAGE;
+    const title = content.site.title.no || 'Melissa sin verden';
+    const desc = content.site.tagline.no || '';
+    const a = (v) => esc(v).replace(/\n/g, ' ');
+    return [
+      '  <!-- deling:start (oppdateres automatisk av admin når du publiserer) -->',
+      `  <meta name="description" content="${a(desc)}">`,
+      '  <meta property="og:type" content="website">',
+      `  <meta property="og:site_name" content="${a(title)}">`,
+      `  <meta property="og:title" content="${a(title)}">`,
+      `  <meta property="og:description" content="${a(desc)}">`,
+      `  <meta property="og:url" content="${a(siteUrl)}">`,
+      `  <meta property="og:image" content="${a(abs(image))}">`,
+      ...(image === DEFAULT_SHARE_IMAGE ? ['  <meta property="og:image:width" content="1200">', '  <meta property="og:image:height" content="630">'] : []),
+      '  <meta name="twitter:card" content="summary_large_image">',
+      '  <!-- deling:slutt -->',
+    ].join('\n');
+  }
+
   // ---------- Lagring: PHP + SQL ----------
 
   const phpBackend = {
@@ -284,8 +428,12 @@
         headers: { 'X-CSRF-Token': this.csrf, ...(body ? { 'Content-Type': 'application/json' } : {}) },
         body: form || (body ? JSON.stringify(body) : undefined),
       });
-      let json = {};
+      let json = null;
       try { json = await res.json(); } catch (e) {}
+      if (!json || typeof json !== 'object') {
+        const err = new Error(`Serveren svarte ikke som forventet (${res.status}). Prøv igjen, eller sjekk PHP-feilloggen.`);
+        err.status = res.status; throw err;
+      }
       if (!res.ok || json.error) {
         const err = new Error(json.error || `Serveren svarte ${res.status}`);
         err.status = res.status;
@@ -346,14 +494,18 @@
       this.ping = setInterval(() => this.call('session').then((s) => { if (s.csrf) this.csrf = s.csrf; }).catch(() => {}), 5 * 60 * 1000);
     },
 
-    async save(content) {
-      await this.call('save', { body: { data: content } });
+    async save(content, files = { moves: [], deletes: [] }) {
+      await this.call('save', { body: { data: content, files } });
     },
 
-    async upload(blob, base, ext) {
+    async upload(blob, base, ext, kind = 'image', folder = '') {
       const form = new FormData();
+      form.append('kind', kind);
+      form.append('folder', folder);
       form.append('file', blob, `${base}.${ext}`);
-      return (await this.call('upload', { form })).path;
+      const { path } = await this.call('upload', { form });
+      if (typeof path !== 'string' || !path) throw new Error('Serveren sendte ikke tilbake hvor filen ble lagret.');
+      return path;
     },
 
     settingsHTML() {
@@ -402,9 +554,11 @@
   function friendlyError(err) {
     if (err.serverMessage) return err.serverMessage;
     if (BACKEND === 'github') {
-      if (err.status === 401) return 'Nøkkelen er ugyldig eller utløpt. Lag en ny.';
-      if (err.status === 403) return 'Nøkkelen mangler tilgang. Sjekk at «Contents» er satt til «Read and write».';
-      if (err.status === 404) return 'Fant ikke repoet eller filen. Sjekk brukernavn, repo, branch og mappe, og at nøkkelen har tilgang til dette repoet.';
+      // Ta med GitHub sin egen forklaring, så det er lettere å se hva som er galt.
+      const detail = err.githubMessage ? ` (GitHub: ${err.githubMessage})` : '';
+      if (err.status === 401) return 'Nøkkelen er ugyldig eller utløpt. Lag en ny.' + detail;
+      if (err.status === 403) return 'Nøkkelen får ikke skrive til repoet. Sjekk at repoet er valgt under «Repository access», og at «Contents» står på «Read and write».' + detail;
+      if (err.status === 404) return 'Fant ikke repoet eller filen. Sjekk brukernavn, repo, branch og mappe, og at nøkkelen har tilgang til dette repoet.' + detail;
     }
     if (err instanceof TypeError) return 'Fikk ikke kontakt med serveren. Sjekk nettet og prøv igjen.';
     return err.message || String(err);
@@ -412,6 +566,8 @@
 
   function ready(content, isDirty = false) {
     data = normalize(content);
+    published = structuredClone(data);
+    sessionAudio.clear();
     dirty = isDirty;
     renderShell();
   }
@@ -452,6 +608,7 @@
     $('#sideNav').addEventListener('click', (e) => {
       const b = e.target.closest('button'); if (!b) return;
       if (b.dataset.view === 'new') return addCharacter();
+      if (b.dataset.view === 'new-album') return addAlbum();
       view = b.dataset.view; renderNav(); renderEditor(); $('#side').classList.remove('open');
       window.scrollTo(0, 0);
     });
@@ -466,6 +623,9 @@
       <div class="group">Karakterer</div>
       ${data.characters.map((c, i) => item(`char:${i}`, `${esc(c.emoji || '✨')} ${esc(c.name || 'Uten navn')}${c.status === 'hidden' ? ' <span class="muted small">(skjult)</span>' : c.status === 'wip' ? ' <span class="muted small">(WIP)</span>' : ''}`)).join('')}
       <button data-view="new" class="add">＋ Ny karakter</button>
+      <div class="group">Musikk</div>
+      ${data.music.albums.map((a, i) => item(`album:${i}`, `♪ ${esc(a.title.no || 'Uten navn')} <span class="muted small">(${a.tracks.length})</span>`)).join('')}
+      <button data-view="new-album" class="add">＋ Nytt album</button>
       <div class="group">Annet</div>
       ${item('settings', '⚙️ Innstillinger')}`;
   }
@@ -537,6 +697,12 @@
           ${langField('Undertittel', 'site.tagline', true)}
           ${langField('Tekst over karakterene', 'site.intro', true)}
           ${imageField('Stort bilde på forsiden', 'site.heroImage', 'Et høyt bilde (stående) passer best.')}
+        </div>
+        <div class="card">
+          <h3 style="margin-top:0">Deling</h3>
+          <p class="small muted">Dette vises når noen deler lenken til siden på Discord, Messenger, Bluesky og lignende.
+            Navnet på siden og undertittelen over brukes som tekst.</p>
+          ${imageField('Delingsbilde', 'site.shareImage', 'Liggende bilde, helst 1200 × 630 piksler. Tomt = standardbildet.')}
         </div>`;
     } else if (view === 'about') {
       ed.innerHTML = `
@@ -552,6 +718,8 @@
         </div>`;
     } else if (view.startsWith('char:')) {
       renderCharacter(+view.slice(5));
+    } else if (view.startsWith('album:')) {
+      renderAlbum(+view.slice(6));
     } else if (view === 'settings') {
       ed.innerHTML = `<h2>Innstillinger</h2>${backend.settingsHTML()}`;
       backend.afterSettings?.();
@@ -650,6 +818,58 @@
       </div>`;
   }
 
+  function renderAlbum(i) {
+    const a = data.music.albums[i];
+    if (!a) { view = 'general'; renderNav(); return renderEditor(); }
+    const p = `music.albums.${i}`;
+    const albums = data.music.albums;
+    $('#editor').innerHTML = `
+      <div class="row" style="justify-content:space-between;margin-bottom:12px">
+        <h2 style="margin:0">♪ ${esc(a.title.no || 'Nytt album')}</h2>
+        <div class="row">
+          <button class="icon" data-act="move-album" data-i="${i}" data-d="-1" ${i === 0 ? 'disabled' : ''} title="Flytt opp i rekkefølgen">↑</button>
+          <button class="icon" data-act="move-album" data-i="${i}" data-d="1" ${i === albums.length - 1 ? 'disabled' : ''} title="Flytt ned i rekkefølgen">↓</button>
+          <a class="btn" href="../#/musikk" target="_blank" rel="noopener">Se ↗</a>
+        </div>
+      </div>
+
+      <div class="card">
+        ${langField('Albumnavn', `${p}.title`)}
+        <div class="grid2">
+          ${textField('Artist', `${p}.artist`)}
+          ${textField('År', `${p}.year`, 'maxlength="12"')}
+        </div>
+        ${langField('Om albumet (valgfritt)', `${p}.description`, true)}
+        ${imageField('Albumcover', `${p}.cover`, 'Kvadratisk bilde passer best. Tomt = rosa-lilla farge med en note.')}
+        ${textField('Nettadresse-navn (id)', `${p}.id`, 'pattern="[a-z0-9]+(-[a-z0-9]+)*"')}
+        <p class="small muted">Brukes også som mappenavn for lydfilene: <code>musikk/${esc(a.id || '…')}/</code>. Endrer du den, flyttes filene når du publiserer.</p>
+      </div>
+
+      <div class="card">
+        <h3 style="margin-top:0">Spor</h3>
+        ${a.tracks.map((tk, j) => `
+          <div class="track-item">
+            <span class="track-num">${j + 1}</span>
+            <input type="text" data-path="${p}.tracks.${j}.title" value="${esc(tk.title)}" placeholder="Sangtittel" aria-label="Tittel på spor ${j + 1}">
+            <audio controls preload="none" src="${esc(imgSrc(tk.src))}"></audio>
+            <div class="tools">
+              <button class="icon" data-act="move" data-path="${p}.tracks" data-i="${j}" data-d="-1" aria-label="Flytt opp" ${j === 0 ? 'disabled' : ''}>↑</button>
+              <button class="icon" data-act="move" data-path="${p}.tracks" data-i="${j}" data-d="1" aria-label="Flytt ned" ${j === a.tracks.length - 1 ? 'disabled' : ''}>↓</button>
+              <button class="icon danger" data-act="remove" data-path="${p}.tracks" data-i="${j}" aria-label="Fjern spor">✕</button>
+            </div>
+          </div>`).join('')}
+        <div class="dropzone" data-act="add-tracks" data-kind="audio" data-path="${p}.tracks" tabindex="0" role="button" style="min-height:120px;margin-top:10px">
+          <div><div style="font-size:2rem">♪</div>Klikk eller dra lydfiler hit<br><span class="small">MP3, M4A, OGG, WAV eller FLAC · maks ${MAX_AUDIO_MB} MB per fil</span></div>
+        </div>
+        <p class="small muted">Tittelen hentes fra filnavnet, men du kan endre den. MP3 gir minst filer og virker overalt.</p>
+      </div>
+
+      <div class="card" style="border-color:rgba(194,26,43,.4)">
+        <h3 style="margin-top:0">Slett album</h3>
+        <button class="danger" data-act="delete-album" data-i="${i}">Slett ${esc(a.title.no || 'albumet')}</button>
+      </div>`;
+  }
+
   // ---------- Hendelser ----------
 
   function onInput(e) {
@@ -658,13 +878,13 @@
     if (!path) return;
     let value = el.value;
     if (path.endsWith('.id')) {
-      value = slug(value);
+      value = slug(value, path.startsWith('music.') ? 'album' : 'karakter');
       if (e.type === 'change') el.value = value;
     }
     if (getPath(path) === value) return;
     setPath(path, value);
     markDirty();
-    if (/\.(name|emoji|status)$/.test(path)) {
+    if (/\.(name|emoji|status)$|^music\.albums\.\d+\.title\.no$/.test(path)) {
       renderNav();
       if (view.startsWith('char:') && e.type === 'change') renderEditor();
     }
@@ -694,6 +914,7 @@
       case 'add-color': list.push('#ffffff'); refresh(); break;
       case 'remove':
         if (path.endsWith('.gallery') && !confirm('Fjerne bildet fra galleriet?')) return;
+        if (path.endsWith('.tracks') && !confirm(`Fjerne «${list[i].title || 'sporet'}» fra albumet?\n\nLydfilen slettes også når du publiserer.`)) return;
         list.splice(i, 1); refresh(); break;
       case 'move': {
         const j = i + d;
@@ -705,6 +926,23 @@
         const chars = data.characters;
         [chars[i], chars[j]] = [chars[j], chars[i]];
         view = `char:${j}`; refresh(); break;
+      }
+      case 'move-album': {
+        const j = i + d;
+        const albums = data.music.albums;
+        [albums[i], albums[j]] = [albums[j], albums[i]];
+        view = `album:${j}`; refresh(); break;
+      }
+      case 'add-tracks': {
+        const files = await pickFiles(true, 'audio/*,.mp3,.m4a,.aac,.ogg,.oga,.wav,.flac');
+        await addTracks(path, files);
+        break;
+      }
+      case 'delete-album': {
+        const a = data.music.albums[i];
+        if (!confirm(`Slette albumet «${a.title.no || 'uten navn'}»?\n\nLydfilene i albumet slettes også når du publiserer.`)) return;
+        data.music.albums.splice(i, 1);
+        view = 'general'; refresh(); break;
       }
       case 'add-gallery': {
         const files = await pickFiles(true);
@@ -725,7 +963,26 @@
 
   function imageHint(path) {
     const m = path.match(/^characters\.(\d+)/);
-    return m ? data.characters[+m[1]].id || 'karakter' : path.split('.')[0];
+    if (m) return data.characters[+m[1]].id || 'karakter';
+    const a = path.match(/^music\.albums\.(\d+)/);
+    if (a) return data.music.albums[+a[1]].id || 'album';
+    return path.split('.')[0];
+  }
+
+  async function addTracks(path, files) {
+    const audios = files.filter(isAudio);
+    if (!audios.length) { if (files.length) toast('Fant ingen lydfiler blant filene.', true); return; }
+    const list = getPath(path);
+    let done = 0;
+    for (const file of audios) {
+      try {
+        const src = await uploadAudio(file, imageHint(path));
+        list.push({ title: niceTitle(file.name), src });
+        done++;
+        markDirty(); renderNav(); renderEditor();
+      } catch (err) { toast(friendlyError(err), true); }
+    }
+    if (done) toast(`${done} spor lastet opp. Husk å trykke Publiser!`);
   }
 
   async function addToGallery(path, files) {
@@ -749,7 +1006,8 @@
     if (!dz) return;
     e.preventDefault();
     dz.classList.remove('over');
-    addToGallery(dz.dataset.path, [...e.dataTransfer.files]);
+    if (dz.dataset.kind === 'audio') addTracks(dz.dataset.path, [...e.dataTransfer.files]);
+    else addToGallery(dz.dataset.path, [...e.dataTransfer.files]);
   }
 
   document.addEventListener('keydown', (e) => {
@@ -769,6 +1027,16 @@
     toast('Ny karakter lagt til som «Skjult» – bytt status når den er klar.');
   }
 
+  function addAlbum() {
+    const n = data.music.albums.length + 1;
+    data.music.albums.push({
+      id: `album-${n}`, title: { no: 'Nytt album', en: 'New album' }, artist: 'Asarayja',
+      year: String(new Date().getFullYear()), cover: '', description: { no: '', en: '' }, tracks: [],
+    });
+    view = `album:${data.music.albums.length - 1}`;
+    markDirty(); renderNav(); renderEditor();
+  }
+
   // ---------- Publisering ----------
 
   function validate() {
@@ -779,6 +1047,13 @@
       if (ids.has(c.id)) return `To karakterer har samme id: «${c.id}». Gi dem forskjellige.`;
       ids.add(c.id);
     }
+    const albumIds = new Set();
+    for (const a of data.music.albums) {
+      if (!a.id) return `Albumet «${a.title.no}» mangler nettadresse-navn (id).`;
+      if (!ALBUM_ID.test(a.id) || a.id.length > 80) return `Id-en «${a.id}» kan bare ha små bokstaver, tall og bindestrek (f.eks. «mitt-album»).`;
+      if (albumIds.has(a.id)) return `To album har samme id: «${a.id}». Gi dem forskjellige.`;
+      albumIds.add(a.id);
+    }
     return null;
   }
 
@@ -788,8 +1063,22 @@
     if (problem) return toast(problem, true);
     busy++; updateStatus('Publiserer …');
     try {
-      await backend.save(data);
+      const next = structuredClone(data);
+      const files = planMusicFiles(published, next);
+      await backend.save(next, files);
+      // Bare stiene til flyttede lydfiler endres i det du redigerer, så endringer gjort mens den publiserte går ikke tapt.
+      const moved = Object.fromEntries(files.moves.map((m) => [m.from, m.to]));
+      for (const a of data.music.albums) {
+        for (const t of a.tracks) {
+          if (!moved[t.src]) continue;
+          if (previews[t.src]) previews[moved[t.src]] = previews[t.src];
+          t.src = moved[t.src];
+        }
+      }
+      published = next;
+      sessionAudio.clear();
       dirty = false;
+      if (files.moves.length) renderEditor();
       toast(backend.publishedMsg);
     } catch (err) {
       toast(friendlyError(err), true);
